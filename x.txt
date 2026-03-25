@@ -1,63 +1,48 @@
 'use strict';
 
-function safeHook(moduleName, symbolNames) {
-    if (!Array.isArray(symbolNames)) {
-        console.log('[!] symbolNames não é array para', moduleName, 'valor=', symbolNames);
+function listModules() {
+    console.log('=== MODULES ===');
+    Process.enumerateModules().forEach(function (m) {
+        const n = m.name.toLowerCase();
+        if (
+            n.indexOf('audio') !== -1 ||
+            n.indexOf('tinyalsa') !== -1 ||
+            n.indexOf('qcom') !== -1 ||
+            n.indexOf('primary') !== -1 ||
+            n.indexOf('vendor') !== -1
+        ) {
+            console.log(m.name, 'base=', m.base, 'size=', m.size);
+        }
+    });
+}
+
+function hookExport(moduleName, exportName) {
+    const addr = Module.findExportByName(moduleName, exportName);
+    if (!addr) {
+        console.log('[-] não achei', exportName, 'em', moduleName);
         return;
     }
 
-    const mod = Process.findModuleByName(moduleName);
-    if (!mod) {
-        console.log('[!] módulo não carregado:', moduleName);
-        return;
-    }
+    console.log('[+] hook', moduleName, exportName, addr);
 
-    console.log('[+] módulo encontrado:', moduleName, 'base=', mod.base);
-
-    symbolNames.forEach(function (name) {
-        try {
-            const addr = Module.findExportByName(moduleName, name);
-
-            if (!addr) {
-                console.log('  [-] símbolo não encontrado:', name);
-                return;
-            }
-
-            console.log('  [+] hook em', name, '@', addr);
-
-            Interceptor.attach(addr, {
-                onEnter(args) {
-                    this.fn = name;
-                    console.log('[CALL]', moduleName, name,
-                        'arg0=', args[0],
-                        'arg1=', args[1],
-                        'arg2=', args[2]);
-                },
-                onLeave(retval) {
-                    console.log('[RET ]', moduleName, this.fn, '=>', retval);
-                }
-            });
-        } catch (e) {
-            console.log('  [!] erro hookando', name, '=>', e);
+    Interceptor.attach(addr, {
+        onEnter(args) {
+            this.name = exportName;
+            console.log('[CALL]', moduleName, exportName,
+                'a0=', args[0], 'a1=', args[1], 'a2=', args[2], 'tid=', Process.getCurrentThreadId());
+        },
+        onLeave(retval) {
+            console.log('[RET ]', moduleName, this.name, '=>', retval);
         }
     });
 }
 
 setImmediate(function () {
-    console.log('[*] start');
+    listModules();
 
-    safeHook('libaudioclient.so', [
-        '_ZN7android11AudioSystem14setPhoneStateEi',
-        '_ZN7android11AudioSystem15setForceUseE19audio_policy_force_use_t24audio_policy_forced_cfg_t'
-    ]);
+    hookExport('libtinyalsa.so', 'pcm_open');
+    hookExport('libtinyalsa.so', 'pcm_read');
+    hookExport('libtinyalsa.so', 'pcm_write');
 
-    safeHook('libaudioflinger.so', [
-        '_ZN7android12AudioFlinger9openInputEiP19audio_config_base_tP13audio_source_tjPNS_11String8E'
-    ]);
-
-    safeHook('libtinyalsa.so', [
-        'pcm_open',
-        'pcm_read',
-        'pcm_write'
-    ]);
+    hookExport('libaudioclient.so', '_ZN7android11AudioSystem14setPhoneStateEi');
 });
