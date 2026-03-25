@@ -1,0 +1,62 @@
+'use strict';
+
+function hookIfExists(moduleName, symbolNames) {
+    const mod = Process.findModuleByName(moduleName);
+    if (!mod) {
+        console.log('[!] módulo não carregado:', moduleName);
+        return;
+    }
+
+    console.log('[+] módulo:', moduleName, 'base=', mod.base);
+
+    symbolNames.forEach(name => {
+        const addr = Module.findExportByName(moduleName, name);
+        if (!addr) {
+            console.log('  [-] símbolo não encontrado:', name);
+            return;
+        }
+
+        console.log('  [+] hook em', name, '@', addr);
+
+        Interceptor.attach(addr, {
+            onEnter(args) {
+                this.name = name;
+                console.log('[CALL]', moduleName, name,
+                    'arg0=', args[0],
+                    'arg1=', args[1],
+                    'arg2=', args[2],
+                    'tid=', Process.getCurrentThreadId());
+            },
+            onLeave(retval) {
+                console.log('[RET ]', moduleName, this.name, '=>', retval);
+            }
+        });
+    });
+}
+
+setImmediate(function () {
+    console.log('[*] Frida passive audio tracing start');
+
+    hookIfExists('libaudioclient.so', [
+        '_ZN7android11AudioSystem14setPhoneStateEi',
+        '_ZN7android11AudioSystem15setForceUseE19audio_policy_force_use_t24audio_policy_forced_cfg_t'
+    ]);
+
+    hookIfExists('libaudioflinger.so', [
+        '_ZN7android12AudioFlinger10openOutputERKNS_2spINS_7IMemoryEEEP19audio_config_base_tPiiPNS_11String8EPNS_10audio_uuidE',
+        '_ZN7android12AudioFlinger9openInputEiP19audio_config_base_tP13audio_source_tjPNS_11String8E'
+    ]);
+
+    hookIfExists('libaudiohal.so', [
+        'adev_open_output_stream',
+        'adev_open_input_stream',
+        'out_write',
+        'in_read'
+    ]);
+
+    hookIfExists('libtinyalsa.so', [
+        'pcm_open',
+        'pcm_read',
+        'pcm_write'
+    ]);
+});
