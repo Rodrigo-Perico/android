@@ -1,48 +1,24 @@
-'use strict';
+O ponto principal é este: o seu filtro atual funcionar em VoIP não significa que ele possa ser “reaproveitado” na chamada telefônica normal no nível de app/framework. A documentação oficial para ConnectionService e para o “self-managed call audio” é voltada a chamadas gerenciadas/VoIP, não ao caminho nativo de telefonia celular. Já a pilha de áudio de dispositivo fica amarrada ao Audio Policy + Audio HAL; em Android 14+ a HAL de áudio é AIDL, e no Android 16 há ainda suporte completo a Configurable Audio Policy na AIDL Audio HAL. Em prática, isso empurra a adaptação de chamada celular para camada de plataforma/vendor, não para a mesma lógica de VoIP “as is”.  ￼
 
-function listModules() {
-    console.log('=== MODULES ===');
-    Process.enumerateModules().forEach(function (m) {
-        const n = m.name.toLowerCase();
-        if (
-            n.indexOf('audio') !== -1 ||
-            n.indexOf('tinyalsa') !== -1 ||
-            n.indexOf('qcom') !== -1 ||
-            n.indexOf('primary') !== -1 ||
-            n.indexOf('vendor') !== -1
-        ) {
-            console.log(m.name, 'base=', m.base, 'size=', m.size);
-        }
-    });
-}
+Então, conceitualmente, o caminho mais sensato é:
+	1.	Não tentar “fingir” que a chamada celular é IN_COMMUNICATION do começo ao fim.
+Isso tende a quebrar roteamento, volume, seleção de dispositivo, política de captura e comportamento esperado da telefonia. O modo de chamada e o pipeline de telefonia existem justamente para tratamento separado.  ￼
+	2.	Reusar apenas o bloco DSP/filtro, não a semântica inteira de VoIP.
+Em outras palavras: mantenha a chamada como telephony / MODE_IN_CALL no restante da stack e crie uma camada adaptadora que entregue ao seu filtro um buffer PCM com contrato parecido ao que ele já espera em VOICE_COMMUNICATION. Depois, o resultado volta para o caminho de uplink/downlink de telefonia. Isso preserva a policy correta e reduz retrabalho lógico.
+	3.	Tratar isso no ponto onde o áudio de telefonia já está materializado em PCM acessível à plataforma/vendor, e não no nível de app.
+Em tese, os candidatos arquiteturais são:
+	•	um hook/preprocessamento no caminho de telephony do vendor audio stack, ou
+	•	um ponto de integração em Audio HAL / policy que reconheça “uso de telefonia” e injete seu filtro.
+Isso é coerente com a arquitetura oficial, onde framework chama a HAL e a policy descreve topologia/rotas/capacidades.  ￼
 
-function hookExport(moduleName, exportName) {
-    const addr = Module.findExportByName(moduleName, exportName);
-    if (!addr) {
-        console.log('[-] não achei', exportName, 'em', moduleName);
-        return;
-    }
+O que eu não faria é basear a solução em “capturar como VOICE_COMMUNICATION e retransmitir como IN_CALL” no sentido literal, porque isso soa como duas sessões lógicas diferentes brigando pela entrada/saída. O Android deixa claro que compartilhamento de input em voice call é excepcional e priorizado, e apps comuns não recebem esse áudio livremente; quando isso funciona em produto, normalmente é porque a solução está em camada privilegiada/vendor, não porque o framework foi convencido a tratar telephony igual a VoIP.  ￼
 
-    console.log('[+] hook', moduleName, exportName, addr);
+Em resumo: sim, dá para reaproveitar o seu filtro, mas o reaproveitamento correto é do algoritmo, não do “modo” de áudio. A estratégia tecnicamente limpa é:
+	•	chamada continua sendo telephony / MODE_IN_CALL;
+	•	você cria um adapter para alimentar o filtro já existente com buffers no formato que ele espera;
+	•	a inserção acontece em platform/vendor audio path, não no app/Telecom de VoIP.
 
-    Interceptor.attach(addr, {
-        onEnter(args) {
-            this.name = exportName;
-            console.log('[CALL]', moduleName, exportName,
-                'a0=', args[0], 'a1=', args[1], 'a2=', args[2], 'tid=', Process.getCurrentThreadId());
-        },
-        onLeave(retval) {
-            console.log('[RET ]', moduleName, this.name, '=>', retval);
-        }
-    });
-}
-
-setImmediate(function () {
-    listModules();
-
-    hookExport('libtinyalsa.so', 'pcm_open');
-    hookExport('libtinyalsa.so', 'pcm_read');
-    hookExport('libtinyalsa.so', 'pcm_write');
-
-    hookExport('libaudioclient.so', '_ZN7android11AudioSystem14setPhoneStateEi');
-});
+Se você quiser, eu posso te devolver isso no formato de arquitetura prática, com:
+	•	onde o adapter deveria ficar na stack,
+	•	quais contratos de buffer/latência preservar,
+	•	e um plano de migração do filtro de VOICE_COMMUNICATION para telephony sem reimplementar do zero.
